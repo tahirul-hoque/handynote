@@ -12,7 +12,7 @@ export default auth((req: any) => {
   const isAuthApi = pathname.startsWith('/api/auth');
   const isSignupApi = pathname.startsWith('/api/signup');
   const isApiRoute = pathname.startsWith('/api/');
-  const isAuthPage = pathname === '/login' || pathname === '/signup';
+  const isAuthPage = pathname === '/login' || pathname === '/signup' || pathname === '/forgot-password' || pathname === '/reset-password';
 
   if (isAuthApi || isSignupApi) return NextResponse.next();
 
