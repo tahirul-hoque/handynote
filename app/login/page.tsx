@@ -90,17 +90,13 @@ export default function LoginPage() {
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
-              <div className="flex justify-end mt-1">
-                <button 
-                  type="button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    router.push('/forgot-password');
-                  }}
-                  className="text-sm text-blue-400 hover:text-blue-300 transition cursor-pointer bg-transparent border-none p-0"
+              <div className="flex justify-end mt-1 z-10 relative">
+                <Link 
+                  href="/forgot-password"
+                  className="text-sm text-blue-400 hover:text-blue-300 transition"
                 >
                   Forgot password?
-                </button>
+                </Link>
               </div>
             </div>
 
