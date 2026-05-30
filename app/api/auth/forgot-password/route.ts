@@ -76,13 +76,17 @@ export async function POST(req: Request) {
       if (info.messageId && !process.env.SMTP_HOST) {
         console.log('Preview URL: %s', nodemailer.getTestMessageUrl(info));
       }
+
+      return NextResponse.json({ message: 'Reset link has been sent successfully.' });
+    } else {
+      console.log(`Debug: User with email ${email} not found in DB.`);
+      return NextResponse.json({ error: 'No account found with that email address.' }, { status: 404 });
     }
 
-    return NextResponse.json({ message: 'If an account exists, a reset link has been sent.' });
   } catch (error) {
     console.error('Forgot password error:', error);
     return NextResponse.json(
-      { error: 'An error occurred while processing your request' },
+      { error: `SMTP Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}` },
       { status: 500 }
     );
   }
