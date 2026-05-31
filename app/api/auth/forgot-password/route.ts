@@ -6,107 +6,116 @@ import nodemailer from 'nodemailer';
 
 export async function POST(req: Request) {
   try {
-    const { email } = await req.json();
+    const body = await req.json();
+    const email = (body.email || '').trim().toLowerCase();
 
     if (!email) {
       return NextResponse.json({ error: 'Email is required' }, { status: 400 });
     }
 
+    // ── 1. Database ─────────────────────────────────────────────────────────
     await dbConnect();
+    const user = await User.findOne({ email });
 
-    const user = await User.findOne({ email: email.toLowerCase() });
-
-    // We don't want to reveal if an email exists or not to prevent user enumeration
-    // but we will only generate token and send email if user exists.
-    if (user) {
-      const resetToken = crypto.randomBytes(32).toString('hex');
-      const resetTokenExpiry = Date.now() + 3600000; // 1 hour
-
-      user.resetPasswordToken = resetToken;
-      user.resetPasswordExpires = resetTokenExpiry;
-      await user.save();
-
-      // Configure nodemailer
-      let transporter;
-      
-      // Debug: log what SMTP config is being picked up
-      console.log('[SMTP DEBUG] Host:', process.env.SMTP_HOST);
-      console.log('[SMTP DEBUG] Port:', process.env.SMTP_PORT);
-      console.log('[SMTP DEBUG] User:', process.env.SMTP_USER);
-      console.log('[SMTP DEBUG] Pass set:', !!process.env.SMTP_PASS);
-      console.log('[SMTP DEBUG] From:', process.env.SMTP_FROM);
-      console.log('[SMTP DEBUG] Secure:', process.env.SMTP_SECURE);
-
-      // If no SMTP credentials provided, create ethereal test account for development
-      if (process.env.SMTP_HOST && process.env.SMTP_PORT && process.env.SMTP_USER && process.env.SMTP_PASS) {
-        transporter = nodemailer.createTransport({
-          host: process.env.SMTP_HOST,
-          port: parseInt(process.env.SMTP_PORT),
-          secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
-          auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS,
-          },
-        });
-
-        // Verify SMTP connection before sending
-        try {
-          await transporter.verify();
-          console.log('[SMTP DEBUG] SMTP connection verified successfully ✓');
-        } catch (verifyError) {
-          console.error('[SMTP DEBUG] SMTP verification FAILED:', verifyError);
-          throw verifyError;
-        }
-      } else {
-        // Fallback to test account for local dev
-        console.log('[SMTP DEBUG] Missing SMTP env vars, falling back to Ethereal.');
-        const testAccount = await nodemailer.createTestAccount();
-        transporter = nodemailer.createTransport({
-          host: 'smtp.ethereal.email',
-          port: 587,
-          secure: false,
-          auth: {
-            user: testAccount.user,
-            pass: testAccount.pass,
-          },
-        });
-        console.log('No SMTP config found. Using Ethereal test account.');
-      }
-
-      const resetUrl = `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
-
-      const mailOptions = {
-        from: process.env.SMTP_FROM || '"HandyNote" <noreply@handynote.com>',
-        to: user.email,
-        subject: 'Password Reset Request',
-        html: `
-          <h1>You requested a password reset</h1>
-          <p>Please click on the following link, or paste this into your browser to complete the process:</p>
-          <p><a href="${resetUrl}">${resetUrl}</a></p>
-          <p>If you did not request this, please ignore this email and your password will remain unchanged.</p>
-          <p>This link is valid for 1 hour.</p>
-        `,
-      };
-
-      console.log('[SMTP DEBUG] Sending email to:', user.email);
-      const info = await transporter.sendMail(mailOptions);
-      console.log('[SMTP DEBUG] Email sent! Message ID:', info.messageId);
-      
-      // In development, if using Ethereal, log the URL to preview the email
-      if (info.messageId && !process.env.SMTP_HOST) {
-        console.log('Preview URL: %s', nodemailer.getTestMessageUrl(info));
-      }
-
-      return NextResponse.json({ message: 'Reset link has been sent successfully.' });
-    } else {
-      console.log(`[DEBUG] User with email ${email} not found in DB.`);
-      return NextResponse.json({ error: 'No account found with that email address.' }, { status: 404 });
+    if (!user) {
+      console.log(`[ForgotPassword] No user found for: ${email}`);
+      // Return 200 to avoid user enumeration — don't tell the caller if the email exists
+      return NextResponse.json({ message: 'If that email is registered, a reset link has been sent.' });
     }
 
+    // ── 2. Generate reset token ──────────────────────────────────────────────
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenExpiry = Date.now() + 3600000; // 1 hour from now
+
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpires = resetTokenExpiry;
+    await user.save();
+    console.log(`[ForgotPassword] Token saved for user: ${email}`);
+
+    // ── 3. Build reset URL ───────────────────────────────────────────────────
+    const baseUrl = (process.env.NEXTAUTH_URL || 'http://localhost:3000').replace(/\/$/, '');
+    const resetUrl = `${baseUrl}/reset-password?token=${resetToken}`;
+
+    // ── 4. SMTP config ───────────────────────────────────────────────────────
+    const smtpHost = process.env.SMTP_HOST;
+    const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+    const smtpUser = process.env.SMTP_USER;
+    const smtpPass = process.env.SMTP_PASS;
+    // Strip surrounding quotes that can appear in .env.local values
+    const smtpFrom = (process.env.SMTP_FROM || 'HandyNote <noreply@handynote.com>').replace(/^["']|["']$/g, '');
+
+    console.log('[ForgotPassword] SMTP_HOST:', smtpHost);
+    console.log('[ForgotPassword] SMTP_PORT:', smtpPort);
+    console.log('[ForgotPassword] SMTP_USER:', smtpUser);
+    console.log('[ForgotPassword] SMTP_PASS set:', !!smtpPass);
+    console.log('[ForgotPassword] SMTP_FROM:', smtpFrom);
+
+    if (!smtpHost || !smtpUser || !smtpPass) {
+      console.error('[ForgotPassword] Missing SMTP environment variables!');
+      return NextResponse.json(
+        { error: 'Email service is not configured. Please contact the administrator.' },
+        { status: 500 }
+      );
+    }
+
+    // ── 5. Create transporter ────────────────────────────────────────────────
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465, // true only for port 465
+      auth: {
+        user: smtpUser,
+        pass: smtpPass,
+      },
+      tls: {
+        // Do not fail on self-signed certs (helps with some SMTP relays)
+        rejectUnauthorized: false,
+      },
+    });
+
+    // ── 6. Verify SMTP connection ────────────────────────────────────────────
+    try {
+      await transporter.verify();
+      console.log('[ForgotPassword] SMTP connection verified ✓');
+    } catch (verifyErr) {
+      console.error('[ForgotPassword] SMTP verify FAILED:', verifyErr);
+      return NextResponse.json(
+        { error: `Cannot connect to email server: ${verifyErr instanceof Error ? verifyErr.message : String(verifyErr)}` },
+        { status: 500 }
+      );
+    }
+
+    // ── 7. Send email ────────────────────────────────────────────────────────
+    const info = await transporter.sendMail({
+      from: smtpFrom,
+      to: user.email,
+      subject: 'HandyNote — Password Reset Request',
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:24px">
+          <h2 style="color:#1e3a5f">Password Reset Request</h2>
+          <p>Hi <strong>${user.name || 'there'}</strong>,</p>
+          <p>We received a request to reset your HandyNote password. Click the button below to set a new password:</p>
+          <p style="text-align:center;margin:32px 0">
+            <a href="${resetUrl}"
+               style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block">
+              Reset My Password
+            </a>
+          </p>
+          <p style="color:#555;font-size:13px">Or copy and paste this link into your browser:</p>
+          <p style="word-break:break-all;font-size:13px;color:#2563eb">${resetUrl}</p>
+          <hr style="margin:32px 0;border:none;border-top:1px solid #eee"/>
+          <p style="color:#888;font-size:12px">This link will expire in <strong>1 hour</strong>. If you did not request a password reset, you can safely ignore this email — your password will not be changed.</p>
+        </div>
+      `,
+    });
+
+    console.log('[ForgotPassword] Email sent! Message ID:', info.messageId);
+    return NextResponse.json({ message: 'If that email is registered, a reset link has been sent.' });
+
   } catch (error) {
-    console.error('[SMTP ERROR] Full error:', error);
+    console.error('[ForgotPassword] Unhandled error:', error);
     return NextResponse.json(
-      { error: `SMTP Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}` },
+      { error: `Something went wrong: ${error instanceof Error ? error.message : 'Unknown error'}` },
       { status: 500 }
     );
   }
