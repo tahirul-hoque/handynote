@@ -29,6 +29,14 @@ export async function POST(req: Request) {
       // Configure nodemailer
       let transporter;
       
+      // Debug: log what SMTP config is being picked up
+      console.log('[SMTP DEBUG] Host:', process.env.SMTP_HOST);
+      console.log('[SMTP DEBUG] Port:', process.env.SMTP_PORT);
+      console.log('[SMTP DEBUG] User:', process.env.SMTP_USER);
+      console.log('[SMTP DEBUG] Pass set:', !!process.env.SMTP_PASS);
+      console.log('[SMTP DEBUG] From:', process.env.SMTP_FROM);
+      console.log('[SMTP DEBUG] Secure:', process.env.SMTP_SECURE);
+
       // If no SMTP credentials provided, create ethereal test account for development
       if (process.env.SMTP_HOST && process.env.SMTP_PORT && process.env.SMTP_USER && process.env.SMTP_PASS) {
         transporter = nodemailer.createTransport({
@@ -40,8 +48,18 @@ export async function POST(req: Request) {
             pass: process.env.SMTP_PASS,
           },
         });
+
+        // Verify SMTP connection before sending
+        try {
+          await transporter.verify();
+          console.log('[SMTP DEBUG] SMTP connection verified successfully ✓');
+        } catch (verifyError) {
+          console.error('[SMTP DEBUG] SMTP verification FAILED:', verifyError);
+          throw verifyError;
+        }
       } else {
         // Fallback to test account for local dev
+        console.log('[SMTP DEBUG] Missing SMTP env vars, falling back to Ethereal.');
         const testAccount = await nodemailer.createTestAccount();
         transporter = nodemailer.createTransport({
           host: 'smtp.ethereal.email',
@@ -70,7 +88,9 @@ export async function POST(req: Request) {
         `,
       };
 
+      console.log('[SMTP DEBUG] Sending email to:', user.email);
       const info = await transporter.sendMail(mailOptions);
+      console.log('[SMTP DEBUG] Email sent! Message ID:', info.messageId);
       
       // In development, if using Ethereal, log the URL to preview the email
       if (info.messageId && !process.env.SMTP_HOST) {
@@ -79,12 +99,12 @@ export async function POST(req: Request) {
 
       return NextResponse.json({ message: 'Reset link has been sent successfully.' });
     } else {
-      console.log(`Debug: User with email ${email} not found in DB.`);
+      console.log(`[DEBUG] User with email ${email} not found in DB.`);
       return NextResponse.json({ error: 'No account found with that email address.' }, { status: 404 });
     }
 
   } catch (error) {
-    console.error('Forgot password error:', error);
+    console.error('[SMTP ERROR] Full error:', error);
     return NextResponse.json(
       { error: `SMTP Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}` },
       { status: 500 }
